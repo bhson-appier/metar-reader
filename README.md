@@ -19,11 +19,10 @@ Data is sourced from the [aviationweather.gov](https://aviationweather.gov) API.
 
 ## Setup
 
+Requires [uv](https://docs.astral.sh/uv/).
+
 ```bash
-python -m venv venv
-source venv/bin/activate
-pip install flask
-python app.py
+uv run app.py
 ```
 
 Then open http://localhost:5000 in your browser.
