@@ -1,3 +1,5 @@
+"""Flask web app that fetches METAR reports and renders them in plain English."""
+
 from flask import Flask, render_template, request, jsonify
 import urllib.request
 import urllib.error
@@ -6,6 +8,8 @@ import json
 import re
 from datetime import datetime, timezone
 
+# aviationweather.gov rejects requests without a User-Agent and its TLS cert
+# sometimes fails hostname verification — disable verification for this API only.
 _ssl_ctx = ssl.create_default_context()
 _ssl_ctx.check_hostname = False
 _ssl_ctx.verify_mode = ssl.CERT_NONE
@@ -16,6 +20,15 @@ METAR_API = "https://aviationweather.gov/api/data/metar?ids={}&format=json"
 
 
 def fetch_metar(airport_code):
+    """Fetch raw METAR JSON for the given ICAO airport code.
+
+    Returns:
+        Parsed JSON (list or dict), or None if the response body is empty.
+
+    Raises:
+        urllib.error.HTTPError: On 4xx/5xx responses.
+        Exception: On network or timeout failures.
+    """
     url = METAR_API.format(airport_code.upper().strip())
     req = urllib.request.Request(url, headers={"User-Agent": "METAR-Reader/1.0"})
     with urllib.request.urlopen(req, timeout=10, context=_ssl_ctx) as response:
@@ -26,23 +39,37 @@ def fetch_metar(airport_code):
 
 
 def celsius_to_fahrenheit(c):
+    """Convert Celsius to Fahrenheit, rounded to the nearest integer."""
     return round(c * 9 / 5 + 32)
 
 
 def knots_to_mph(kt):
+    """Convert knots to miles per hour, rounded to the nearest integer."""
     return round(kt * 1.15078)
 
 
 def degrees_to_cardinal(deg):
+    """Convert a wind bearing in degrees to a 16-point cardinal direction string."""
     if deg is None:
         return "variable"
     directions = ["North", "NNE", "NE", "ENE", "East", "ESE", "SE", "SSE",
                   "South", "SSW", "SW", "WSW", "West", "WNW", "NW", "NNW"]
+    # Each sector spans 22.5°; rounding snaps to the nearest index.
     idx = round(deg / 22.5) % 16
     return directions[idx]
 
 
 def decode_sky(sky_condition):
+    """Decode a list of sky-cover layer dicts into a human-readable string.
+
+    Args:
+        sky_condition: List of dicts with 'cover' and optional 'base' keys,
+            as returned by the aviationweather.gov API.
+
+    Returns:
+        A semicolon-separated string describing each cloud layer, e.g.
+        "Scattered clouds at 3,000 ft; broken at 8,000 ft".
+    """
     cover_map = {
         "SKC": "clear skies",
         "CLR": "clear skies",
@@ -68,6 +95,17 @@ def decode_sky(sky_condition):
 
 
 def decode_weather(wx_string):
+    """Decode a METAR present-weather string into plain English.
+
+    Parses intensity prefixes, descriptors, and phenomenon codes following
+    the WMO/ICAO present-weather encoding scheme.
+
+    Args:
+        wx_string: Space-separated weather tokens, e.g. "-RASN +TSRA BR".
+
+    Returns:
+        A comma-separated plain-English string, or None if wx_string is empty.
+    """
     if not wx_string:
         return None
 
@@ -124,18 +162,24 @@ def decode_weather(wx_string):
 
 
 def decode_metar(data):
+    """Decode a single METAR record dict into a display-ready report dict.
+
+    Args:
+        data: A single METAR object as returned by the aviationweather.gov API.
+
+    Returns:
+        A dict of human-readable fields, or None if data is falsy.
+    """
     if not data:
         return None
 
     report = {}
 
-    # Station
     report["station"] = data.get("icaoId", data.get("stationId", "Unknown"))
     airport_name = data.get("name")
     if airport_name:
         report["airport_name"] = airport_name
 
-    # Observation time
     obs_time = data.get("obsTime")
     if obs_time:
         try:
@@ -144,18 +188,17 @@ def decode_metar(data):
         except Exception:
             report["time"] = str(obs_time)
 
-    # Temperature
     temp_c = data.get("temp")
     if temp_c is not None:
         temp_f = celsius_to_fahrenheit(temp_c)
         report["temperature"] = f"{temp_f}°F ({temp_c}°C)"
         report["temp_f"] = temp_f
 
-    # Dewpoint and humidity feel
     dewp_c = data.get("dewp")
     if dewp_c is not None and temp_c is not None:
         dewp_f = celsius_to_fahrenheit(dewp_c)
         report["dewpoint"] = f"{dewp_f}°F ({dewp_c}°C)"
+        # Dew-point spread is a quick proxy for relative humidity.
         spread = temp_c - dewp_c
         if spread <= 2:
             report["humidity_feel"] = "very humid / foggy conditions possible"
@@ -166,7 +209,6 @@ def decode_metar(data):
         else:
             report["humidity_feel"] = "dry"
 
-    # Wind
     wdir = data.get("wdir")
     wspd = data.get("wspd")
     wgst = data.get("wgst")
@@ -181,10 +223,10 @@ def decode_metar(data):
                 gust_mph = knots_to_mph(wgst)
                 report["wind"] += f", gusting to {gust_mph} mph"
 
-    # Visibility — API returns "10+" as a string or a numeric value
     visib_raw = data.get("visib")
     if visib_raw is not None:
         try:
+            # The API returns "10+" as a string when visibility exceeds 10 SM.
             visib = float(str(visib_raw).replace("+", ""))
             if "+" in str(visib_raw) or visib >= 10:
                 report["visibility"] = "10+ miles (excellent)"
@@ -199,7 +241,7 @@ def decode_metar(data):
         except ValueError:
             report["visibility"] = str(visib_raw)
 
-    # Sky / clouds — use clouds array; fall back to cover field
+    # Prefer the structured clouds array; fall back to the top-level cover field.
     clouds = data.get("clouds")
     if not clouds:
         cover = data.get("cover")
@@ -207,19 +249,17 @@ def decode_metar(data):
             clouds = [{"cover": cover}]
     report["sky"] = decode_sky(clouds).capitalize()
 
-    # Weather phenomena
     wx = data.get("wxString")
     wx_decoded = decode_weather(wx)
     if wx_decoded:
         report["weather"] = wx_decoded.capitalize()
 
-    # Altimeter — API returns hPa, convert to inHg
     altim = data.get("altim")
     if altim is not None:
+        # API returns altimeter in hPa; convert to inHg for US display.
         inhg = round(altim * 0.02953, 2)
         report["altimeter"] = f"{inhg} inHg"
 
-    # Flight category — field is "fltCat" in the API
     flt_cat = data.get("fltCat", data.get("flightCategory"))
     cat_map = {
         "VFR": ("VFR — Visual Flight Rules (great flying weather)", "vfr"),
@@ -230,7 +270,6 @@ def decode_metar(data):
     if flt_cat in cat_map:
         report["flight_category"], report["flight_cat_class"] = cat_map[flt_cat]
 
-    # Plain-English summary
     summary_parts = []
     sky_lower = report.get("sky", "").lower()
     if "clear" in sky_lower or "few" in sky_lower:
@@ -257,7 +296,6 @@ def decode_metar(data):
         joined = ", ".join(summary_parts)
         report["summary"] = joined[0].upper() + joined[1:] + "."
 
-    # Raw METAR
     report["raw"] = data.get("rawOb", "")
 
     return report
@@ -265,11 +303,13 @@ def decode_metar(data):
 
 @app.route("/")
 def index():
+    """Render the search page."""
     return render_template("index.html")
 
 
 @app.route("/weather", methods=["GET"])
 def weather():
+    """Return a decoded METAR report as JSON for the given airport query param."""
     code = request.args.get("airport", "").strip().upper()
     if not code:
         return jsonify({"error": "Please enter an airport code."}), 400
