@@ -25,7 +25,15 @@ Requires [uv](https://docs.astral.sh/uv/).
 uv run app.py
 ```
 
-Then open http://localhost:5000 in your browser.
+Then open http://localhost:5001 in your browser.
+
+## Testing
+
+```bash
+uv run pytest tests/ -v
+```
+
+59 tests covering unit conversions, METAR decoding, and Flask routes. Route tests use mocked API responses — no network calls required.
 
 ## ICAO codes
 
