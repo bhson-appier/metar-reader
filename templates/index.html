@@ -1,0 +1,152 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>METAR Reader — Plain-English Airport Weather</title>
+  <link rel="stylesheet" href="/static/style.css" />
+</head>
+<body>
+
+  <div class="container">
+    <header>
+      <h1>✈️ METAR Reader</h1>
+      <p class="tagline">Type an airport code to get plain-English weather</p>
+    </header>
+
+    <form id="search-form" autocomplete="off">
+      <div class="search-row">
+        <input
+          id="airport-input"
+          type="text"
+          placeholder="e.g. KHIO, KSFO, KJFK"
+          maxlength="4"
+          spellcheck="false"
+        />
+        <button type="submit">Get Weather</button>
+      </div>
+      <p class="hint">Use 3–4 letter ICAO airport codes</p>
+    </form>
+
+    <div id="result" class="hidden">
+      <!-- Filled by JS -->
+    </div>
+
+    <div id="error-box" class="hidden error-box"></div>
+  </div>
+
+  <script>
+    const form = document.getElementById('search-form');
+    const input = document.getElementById('airport-input');
+    const resultDiv = document.getElementById('result');
+    const errorBox = document.getElementById('error-box');
+
+    // Auto-uppercase
+    input.addEventListener('input', () => {
+      const pos = input.selectionStart;
+      input.value = input.value.toUpperCase();
+      input.setSelectionRange(pos, pos);
+    });
+
+    form.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const code = input.value.trim();
+      if (!code) return;
+
+      resultDiv.classList.add('hidden');
+      errorBox.classList.add('hidden');
+      resultDiv.innerHTML = '<div class="loading">Fetching weather…</div>';
+      resultDiv.classList.remove('hidden');
+
+      try {
+        const res = await fetch(`/weather?airport=${encodeURIComponent(code)}`);
+        const data = await res.json();
+
+        if (!res.ok || data.error) {
+          resultDiv.classList.add('hidden');
+          errorBox.textContent = data.error || 'Unknown error.';
+          errorBox.classList.remove('hidden');
+          return;
+        }
+
+        renderReport(data);
+      } catch (err) {
+        resultDiv.classList.add('hidden');
+        errorBox.textContent = 'Network error. Please try again.';
+        errorBox.classList.remove('hidden');
+      }
+    });
+
+    function icon(report) {
+      const sky = (report.sky || '').toLowerCase();
+      const wx = (report.weather || '').toLowerCase();
+      if (wx.includes('thunder')) return '⛈️';
+      if (wx.includes('snow')) return '❄️';
+      if (wx.includes('rain') || wx.includes('drizzle')) return '🌧️';
+      if (wx.includes('fog') || wx.includes('mist')) return '🌫️';
+      if (wx.includes('haze') || wx.includes('smoke')) return '😶‍🌫️';
+      if (sky.includes('overcast') || sky.includes('broken')) return '☁️';
+      if (sky.includes('scattered')) return '⛅';
+      if (sky.includes('few')) return '🌤️';
+      return '☀️';
+    }
+
+    function catClass(report) {
+      return report.flight_cat_class || '';
+    }
+
+    function row(label, value) {
+      if (!value) return '';
+      return `
+        <div class="detail-row">
+          <span class="label">${label}</span>
+          <span class="value">${value}</span>
+        </div>`;
+    }
+
+    function renderReport(r) {
+      const catBadge = r.flight_category
+        ? `<span class="cat-badge ${catClass(r)}">${r.flight_category}</span>`
+        : '';
+
+      resultDiv.innerHTML = `
+        <div class="report-card">
+          <div class="report-header">
+            <div class="weather-icon">${icon(r)}</div>
+            <div class="report-title">
+              <h2>${r.station}</h2>
+              ${r.airport_name ? `<p class="airport-name">${r.airport_name}</p>` : ''}
+              <p class="obs-time">${r.time || ''}</p>
+            </div>
+          </div>
+
+          ${r.summary ? `<p class="summary">${r.summary}</p>` : ''}
+
+          ${catBadge}
+
+          <div class="details">
+            ${row('Temperature', r.temperature)}
+            ${row('Feels like', r.humidity_feel)}
+            ${row('Dewpoint', r.dewpoint)}
+            ${row('Wind', r.wind)}
+            ${row('Visibility', r.visibility)}
+            ${row('Sky', r.sky)}
+            ${r.weather ? row('Weather', r.weather) : ''}
+            ${row('Altimeter', r.altimeter)}
+          </div>
+
+          ${r.raw ? `
+          <details class="raw-section">
+            <summary>Raw METAR</summary>
+            <code>${r.raw}</code>
+          </details>` : ''}
+        </div>
+      `;
+      resultDiv.classList.remove('hidden');
+    }
+
+    // Allow hitting Enter after typing
+    input.focus();
+  </script>
+</body>
+</html>
